@@ -8,14 +8,25 @@ Currently, to build our virtual machines within a given vSphere instance (_we've
 ├── vCenter
 │   └── Datacenter
 │       └── Cluster
-│          └── NEW VM  <<<
+│          └── NEW VM  <<<<
 ```
 
-If the virtual machine is left there, you can run the playbook again, Ansible will see that the virtual machine exists, report OK and end.  However, if you move the virtual machine to a vApp, which we typically do for each customer, ansible fails with: -
+If the virtual machine is left there, you can run the playbook again, Ansible will see that the virtual machine exists, report OK and end.  However, if you move the virtual machine to a vApp, which we typically do for each customer, for example: -
+
+```bash
+├── vCenter
+│   └── Datacenter
+│       └── Cluster
+│          └── Customer 1 vApp
+│            └── NEW VM <<<<
+│          └── Customer 2 vApp
+```
+
+the ansible run fails fails with the following error: -
 
 ```python
 An exception occurred during task execution. To see the full traceback, use -vvv. The error was: TypeError: argument of type 'NoneType' is not iterable
-fatal: [vmmar5be01.foo.bar.com -> localhost]: FAILED! => changed=false
+fatal: [vmmar01.foo.bar.com -> localhost]: FAILED! => changed=false
   module_stderr: |-
     Traceback (most recent call last):
       File "/home/liam/.ansible/tmp/ansible-tmp-1743542487.7318742-126898-155884768968531/AnsiballZ_vmware_guest.py", line 107, in <module>
@@ -55,7 +66,7 @@ elif vms:
 ...
 ```
 
-Which makes sense, you create a virtual machine in one place and you move it, the folder changes.  *WRONG*.  I looked at the folder for the virtual machine I created and then moved using: -
+Which makes sense, you create a virtual machine in one place and you move it, the folder changes.  **WRONG**.  I looked at the folder for the virtual machine I created and then moved using: -
 
 ```yaml
 - name: Get VM Info
@@ -79,30 +90,34 @@ Which makes sense, you create a virtual machine in one place and you move it, th
 And calling the playbook with: -
 
 ```bash
-ap -i hosts/hosts-foo.yml create-vms.yml -J --limit vmmar5be01.foo.bar.com
+ap -i hosts/hosts-foo.yml create-vms.yml -J --limit vmmar01.foo.bar.com
 ```
 
-We can see from the output that the path pre and post vApp move *ARE THE SAME!*
-
-Default root path: -
+We can see from the output that the path pre and post vApp move **ARE THE SAME!**.  The default folder post virtual machine deployment: -
 
 ```bash
 TASK [create-machines : Debug Folder Path] ***************************************************************************************************************************************
 Monday 31 March 2025  18:34:10 +0100 (0:00:00.107)       0:01:41.161 **********
 ok: [vmmar5be01.foo.bar.com] =>
-  msg: VM vmmar5be01.foo.bar.com is in folder /100357654-LUMON-DK/vm
+  msg: VM vmmar01.foo.bar.com is in folder /100357654-LUMON-DK/vm
 ```
+
+The folder after moving the virtual machine to its vApp: -
 
 ```bash
 vApp path
 TASK [create-machines : Debug Folder Path] ***************************************************************************************************************************************
 Monday 31 March 2025  18:38:09 +0100 (0:00:00.129)       0:01:39.368 **********
 ok: [vmmar5be01.foo.bar.com] =>
-  msg: VM vmmar5be01.foo.bar.com is in folder /100357654-LUMON-DK/vm
+  msg: VM vmmar01.foo.bar.com is in folder /100357654-LUMON-DK/vm
 ```
+
+So this PoC looks to address the small issues with creating and managing the infrastructure with Ansible.
+
 ### Project Setup
 
 To setup a new project, you'll need to add your vSphere credentials in `providers.tf`: -
+
 ```hcl
 provider "vsphere" {
   user           = "USERNAME"
@@ -111,7 +126,8 @@ provider "vsphere" {
   allow_unverified_ssl = true 
 }
 ```
-I need to add a method of allowing the user to have multiple vSphere clients, but this is just an PoC example.
+
+_Note: - I need to add a method of allowing the user to have multiple vSphere clients, but this is just an PoC example._
 
 Next, you need to create a directory within `./environments` for the DC along with a `*.tfvars` file within said directory.  This could be for `dev`, `staging` or `production`, entirely your choosing.  Inside the `*.tfvars` file is where we hold the setup for the project, this include the DC details, vApp config and VM config.  Example project setup which creates a parent vApp called `Lumon`, a child vApp called `MDR` and then two VMs within the `MDR` vApp: -
 
@@ -215,27 +231,26 @@ Terraform will perform the following actions:
 Plan: 1 to add, 0 to change, 1 to destroy.
 ```
 
-This happens because in the vsphere provider, network configuration parameters (_including DNS servers_) are treated as immutable properties of the virtual machine resource.  The provider doesn't implement the capability to modify these network settings in-place on an existing VM.
- The underlying reason is that the Terraform vsphere provider was designed with an "immutable infrastructure" philosophy for many core VM attributes.  Instead of attempting to make surgical changes to running VMs, it prefers to rebuild them entirely to match the desired state.
+This happens because in the vsphere provider, network configuration parameters (_including DNS servers_) are treated as immutable properties of the virtual machine resource.  The provider doesn't implement the capability to modify these network settings in-place on an existing VM.  The underlying reason is that the Terraform vsphere provider was designed with an "immutable infrastructure" philosophy for many core VM attributes.  Instead of attempting to make surgical changes to running VMs, it prefers to rebuild them entirely to match the desired state.
 
 If you've a machine, like a database, I'd tread very carefully updating config post deployment.  If want to make the resource without destorying the machine, you could consider using the `terraform import` workflow to bring the modified VM back under management after making changes outside of Terraform.
 
 ### Creating the Infrastructure
 
-As with any new Terraform project, run `terraform init` to being in the provider and initialize any modules.  Next, we want to target out project tfvars file, we can do that with: -
+As with any new Terraform project, run `terraform init` to bring in the provider and initialize any modules.  Next, we want to target our project tfvars file, we can do that with: -
 
 ```bash
 terrafrom plan -var-file=environments/copenhagen/lumon.tfvars
 ```
 
-Once the plan has completed, we should see the additions, changes and destruction based of the current tfstate file.  This is example is a fresh project so only addtions will show: -
+Once the plan has completed, we should see the additions, changes and destruction based of the current `terraform.tfstate` file.  This is example is a fresh project so only addtions will show: -
 
 ```bash
 ...
 Plan: 6 to add, 0 to change, 0 to destroy.
 ```
 
-Now, we can apply our config.  It's safer to use apply with `-auto-approve` and confirm on the CLI but this is a PoC and I consider it 'safe': -
+Now, we can apply our config.  It's safer to use apply without `-auto-approve` and provide confirmation on the CLI but this is a PoC and I consider it 'safe': -
 
 ```bash
 terrafrom apply -auto-approve -var-file=environments/copenhagen/lumon.tfvars
@@ -251,14 +266,16 @@ module.vms["proj_mdr.mdr_tumwater"].vsphere_virtual_machine.vm: Creation complet
 Apply complete! Resources: 6 added, 0 changed, 0 destroyed.
 ```
 
-Verify that the parent a child vApps exist and thier respective VMs: -
+Verify that the parent, child vApps exist and thier respective VMs: -
 
 ![Lumon Industries vApp example](screenshots/lumon-vpp.png "Lumon Industries vApp example")
 
 ### Destroying the Infrastructure
 
-Now that we've proved we can deploy vApps and virtual machines and manage them using Terraform, we can destroy the infrastrucre to save resources: -
+Now that we've proved we can deploy vApps, virtual machines and manage them using Terraform, we can destroy the infrastrucre to save resources: -
 
 ```bash
 terrafrom destroy -auto-approve -var-file=environments/copenhagen/lumon.tfvars
 ```
+
+Ideally, I'd have added some Github actions into this project but since I've removed the provider authentication for the time being there wasn't much point.
